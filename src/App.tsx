@@ -12,7 +12,6 @@ export const App: React.FC = () => {
   const {
     state: {
       todos,
-      filteredTodos,
       error,
       filter,
     },
@@ -27,16 +26,17 @@ export const App: React.FC = () => {
       <h1 className="todoapp__title">todos</h1>
 
       <div className="todoapp__content">
+        <div data-cy="TodoLoader" className="modal overlay">
+          <div className="modal-background has-background-white-ter" />
+          <div className="loader" />
+        </div>
+
         <Header />
 
-        {filteredTodos && (
-          <Todos todos={filteredTodos} />
-        )}
+        <Todos />
 
-        {todos && (
-          <Footer
-            activeTodos={todos?.filter(todo => !todo.completed).length || 0}
-          >
+        {!!todos?.length && (
+          <Footer>
             <Filter
               selectedFilter={filter}
               onFilterChange={filterTodos}

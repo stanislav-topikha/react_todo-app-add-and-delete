@@ -7,27 +7,33 @@ import {
   useEffect,
   useReducer,
 } from 'react';
+import { deleteTodo, getTodos, sendTodo } from '../api/todos';
 import { FilterEnum } from '../app.constants';
 import { AuthContext } from '../components/Auth/AuthContext';
 import { Todo } from '../types/Todo';
-import { client } from '../utils/fetchClient';
+
+export interface StateTodo extends Todo {
+  isLoading: boolean;
+}
 
 type State = {
-  todos: null | Todo[],
-  filteredTodos: null | Todo[],
+  todos: null | StateTodo[],
+  filteredTodos: null | StateTodo[],
   error: null | string,
   filter: FilterEnum,
+  tempTodo: null | StateTodo,
 };
 
 type DispatchAction =
-  { type: 'SET_TODOS', payload: Todo[] | null }
+  { type: 'SET_TODOS', payload: StateTodo[] | null }
   | { type: 'SET_FILTER', payload: FilterEnum }
-  | { type: 'SET_FILTERED_TODOS', payload: Todo[] | null }
-  | { type: 'CREATE_TODO', payload: Todo }
-  | { type: 'UPDATE_TODO', payload: Partial<Todo> & Pick<Todo, 'id'> }
+  | { type: 'SET_FILTERED_TODOS', payload: StateTodo[] | null }
+  | { type: 'CREATE_TODO', payload: StateTodo }
+  | { type: 'UPDATE_TODO', payload: Partial<StateTodo> & Pick<StateTodo, 'id'> }
   | { type: 'DELETE_TODO', payload: number }
   | { type: 'SET_ERROR', payload: string }
-  | { type: 'CLEAR_ERROR', payload?: undefined };
+  | { type: 'CLEAR_ERROR', payload?: undefined }
+  | { type: 'SET_TEMP_TODO', payload: StateTodo | null };
 
 interface UseAppContextResult {
   state: State,
@@ -36,6 +42,8 @@ interface UseAppContextResult {
     createTodo: (todo: Pick<Todo, 'title' | 'completed'>) => Promise<void>;
     filterTodos: (filter: FilterEnum) => Promise<void>;
     clearError: VoidFunction;
+    setError: (error: string) => void;
+    deleteTodo: (id: number) => Promise<void>
   },
 }
 
@@ -47,7 +55,7 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
   const user = useContext(AuthContext);
   const [
     {
-      todos, filteredTodos, error, filter,
+      todos, filteredTodos, error, filter, tempTodo,
     },
     dispatch,
   ] = useReducer((
@@ -65,6 +73,12 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
         return {
           ...prev,
           filter: payload,
+        };
+
+      case 'SET_TEMP_TODO':
+        return {
+          ...prev,
+          tempTodo: payload,
         };
 
       case 'SET_FILTERED_TODOS':
@@ -100,7 +114,7 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
 
         return {
           ...prev,
-          todos: prev.todos.filter((todo) => todo.id === payload),
+          todos: prev.todos.filter((todo) => todo.id !== payload),
         };
 
       case 'SET_ERROR':
@@ -123,6 +137,7 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
     filteredTodos: null,
     error: null,
     filter: FilterEnum.All,
+    tempTodo: null,
   });
 
   const loadTodos = useCallback(async () => {
@@ -133,9 +148,7 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
     }
 
     try {
-      const todosFromServer = await client.get<Todo[]>(
-        `/todos?userId=${user.id}`,
-      );
+      const todosFromServer = await getTodos(user.id);
 
       if (todosFromServer.length) {
         newTodos = todosFromServer;
@@ -151,27 +164,71 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
   }, [user, filter, dispatch]);
 
   const appFunctions = {
-    loadTodos: async () => (dispatch({
-      type: 'SET_TODOS',
-      payload: await loadTodos(),
-    })),
+    loadTodos: async () => {
+      const todosFromServer = await loadTodos();
+
+      dispatch({
+        type: 'SET_TODOS',
+        payload: todosFromServer && todosFromServer.map(todo => (
+          { ...todo, isLoading: false }
+        )),
+      });
+    },
 
     createTodo: async (
-      todo: Pick<Todo, 'title' | 'completed'>,
+      { title, completed }: Pick<Todo, 'title' | 'completed'>,
     ) => {
       if (!user) {
         return;
       }
 
-      const tempId = new Date().getTime();
+      const normalizedTitle = title.trim();
+
+      if (!normalizedTitle) {
+        dispatch({
+          type: 'SET_ERROR',
+          payload: 'Title can&apos;t be empty',
+        });
+
+        return;
+      }
+
+      dispatch({
+        type: 'SET_TEMP_TODO',
+        payload: {
+          id: 0,
+          userId: user.id,
+          title,
+          completed,
+          isLoading: true,
+        },
+      });
+
+      let todoFromServer = null;
+
+      try {
+        todoFromServer = await sendTodo({
+          userId: user.id,
+          title: normalizedTitle,
+          completed,
+        });
+      } catch {
+        dispatch({
+          type: 'SET_ERROR',
+          payload: 'Unable to add a todo',
+        });
+
+        return;
+      }
+
+      dispatch({
+        type: 'SET_TEMP_TODO',
+        payload: null,
+      });
 
       dispatch({
         type: 'CREATE_TODO',
-        payload: {
-          userId: user.id,
-          id: tempId,
-          ...todo,
-        },
+        payload: { ...todoFromServer, isLoading: false },
       });
     },
 
@@ -183,19 +240,55 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
 
       dispatch({
         type: 'SET_FILTERED_TODOS',
-        payload: todos && todos.filter(({ completed }) => {
-          const filterOptions = {
+        payload: todos && todos.filter(({ completed }) => (
+          {
             [FilterEnum.All]: true,
             [FilterEnum.Active]: !completed,
             [FilterEnum.Completed]: completed,
-          };
-
-          return filterOptions[newFilter];
-        }),
+          }[newFilter]
+        )),
       });
     },
 
+    setError: (newError: string) => (
+      dispatch({ type: 'SET_ERROR', payload: newError })
+    ),
+
     clearError: () => (dispatch({ type: 'CLEAR_ERROR' })),
+
+    deleteTodo: async (id: number) => {
+      dispatch({
+        type: 'UPDATE_TODO',
+        payload: {
+          id,
+          isLoading: true,
+        },
+      });
+
+      try {
+        await deleteTodo(id);
+      } catch {
+        dispatch({
+          type: 'SET_ERROR',
+          payload: 'Unable to delete a todo',
+        });
+
+        dispatch({
+          type: 'UPDATE_TODO',
+          payload: {
+            id,
+            isLoading: false,
+          },
+        });
+
+        return;
+      }
+
+      dispatch({
+        type: 'DELETE_TODO',
+        payload: id,
+      });
+    },
   };
 
   useEffect(() => {
@@ -214,6 +307,7 @@ export const AppProvider: FC<PropsWithChildren> = ({ children }) => {
           filteredTodos,
           error,
           filter,
+          tempTodo,
         },
         actions: appFunctions,
       }}

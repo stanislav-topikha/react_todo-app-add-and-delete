@@ -1,18 +1,26 @@
 import cn from 'classnames';
-import { Todo } from '../../types/Todo';
+import { StateTodo } from '../../context/useAppContext';
 
 interface Props {
-  todo: Todo;
+  todo: StateTodo;
+  handleClick?: VoidFunction;
 }
 
-export const TodoItem: React.FC<Props> = ({ todo }) => {
+export const TodoItem: React.FC<Props> = ({
+  todo: {
+    title,
+    completed,
+    isLoading,
+  },
+  handleClick,
+}) => {
   return (
     <div
       data-cy="Todo"
       className={cn(
         'todo',
         {
-          completed: todo.completed,
+          completed,
         },
       )}
     >
@@ -24,17 +32,23 @@ export const TodoItem: React.FC<Props> = ({ todo }) => {
         />
       </label>
 
-      <span data-cy="TodoTitle" className="todo__title">{todo.title}</span>
+      <span data-cy="TodoTitle" className="todo__title">{title}</span>
 
       <button
         type="button"
         className="todo__remove"
         data-cy="TodoDeleteButton"
+        onClick={handleClick}
       >
         ×
       </button>
 
-      <div data-cy="TodoLoader" className="modal overlay">
+      <div
+        data-cy="TodoLoader"
+        className={cn('modal overlay', {
+          'is-active': isLoading,
+        })}
+      >
         <div className="modal-background has-background-white-ter" />
         <div className="loader" />
       </div>
